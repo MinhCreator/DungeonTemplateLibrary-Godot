@@ -1,6 +1,6 @@
 extends Node3D
 
-const CAMERA_OFFSET_Y := 10.0
+const CAMERA_OFFSET_Y := 200.0
 
 @onready var demo_container: Node = $DemoContainer
 @onready var demo_menu: Control = $DemoMenu

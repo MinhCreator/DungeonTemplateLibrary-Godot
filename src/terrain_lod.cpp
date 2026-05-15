@@ -25,10 +25,6 @@ void TerrainLOD::_bind_methods()
   ClassDB::bind_method(D_METHOD("generate", "matrix"), &TerrainLOD::generate);
   ClassDB::bind_method(D_METHOD("clear_terrain"), &TerrainLOD::clear_terrain);
 
-  ClassDB::bind_method(D_METHOD("set_terrain_size", "size"), &TerrainLOD::set_terrain_size);
-  ClassDB::bind_method(D_METHOD("get_terrain_size"), &TerrainLOD::get_terrain_size);
-  ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "terrain_size"), "set_terrain_size", "get_terrain_size");
-
   ClassDB::bind_method(D_METHOD("set_chunk_count", "count"), &TerrainLOD::set_chunk_count);
   ClassDB::bind_method(D_METHOD("get_chunk_count"), &TerrainLOD::get_chunk_count);
   ADD_PROPERTY(PropertyInfo(Variant::INT, "chunk_count"), "set_chunk_count", "get_chunk_count");
@@ -71,9 +67,6 @@ void TerrainLOD::_bind_methods()
 }
 
 // Property getters/setters
-void TerrainLOD::set_terrain_size(float p_size) { terrain_size = p_size; }
-float TerrainLOD::get_terrain_size() const { return terrain_size; }
-
 void TerrainLOD::set_chunk_count(int p_count) { chunk_count = std::max(1, p_count); }
 int TerrainLOD::get_chunk_count() const { return chunk_count; }
 
@@ -134,16 +127,17 @@ Ref<ImageTexture> TerrainLOD::_create_height_texture(const Array &matrix)
   if (map_width == 0)
     return Ref<ImageTexture>();
 
-  // Find min/max values
   int highest_value = -999999;
   int lowest_value = 999999;
 
+  std::vector<float> raw(static_cast<size_t>(map_width) * map_height, 0.0f);
   for (int y = 0; y < map_height; y++)
   {
     Array row = matrix[y];
     for (int x = 0; x < map_width; x++)
     {
       int cell = row[x];
+      raw[y * map_width + x] = static_cast<float>(cell);
       if (cell < lowest_value)
         lowest_value = cell;
       if (cell > highest_value)
@@ -151,24 +145,57 @@ Ref<ImageTexture> TerrainLOD::_create_height_texture(const Array &matrix)
     }
   }
 
-  int range = highest_value - lowest_value;
-  if (range == 0)
-    range = 1;
+  float range = static_cast<float>(highest_value - lowest_value);
+  if (range == 0.0f)
+    range = 1.0f;
+  float lowest_f = static_cast<float>(lowest_value);
 
-  // Create image
-  Ref<Image> image = Image::create_empty(map_width, map_height, false, Image::FORMAT_RGB8);
+  // Two 3x3 box blur passes (≈ 5x5 Gaussian) smooth DTL's integer step
+  // quantization — a single pass isn't enough to hide sub-texel Perlin noise.
+  std::vector<float> smoothed(static_cast<size_t>(map_width) * map_height, 0.0f);
+  std::vector<float> *src = &raw;
+  std::vector<float> *dst = &smoothed;
+  for (int pass = 0; pass < 2; pass++)
+  {
+    for (int y = 0; y < map_height; y++)
+    {
+      for (int x = 0; x < map_width; x++)
+      {
+        float sum = 0.0f;
+        int count = 0;
+        for (int dy = -1; dy <= 1; dy++)
+        {
+          int ny = y + dy;
+          if (ny < 0 || ny >= map_height)
+            continue;
+          for (int dx = -1; dx <= 1; dx++)
+          {
+            int nx = x + dx;
+            if (nx < 0 || nx >= map_width)
+              continue;
+            sum += (*src)[ny * map_width + nx];
+            count++;
+          }
+        }
+        (*dst)[y * map_width + x] = sum / static_cast<float>(count);
+      }
+    }
+    std::swap(src, dst);
+  }
+  // After swap, `src` holds the final blurred data.
+
+  Ref<Image> image = Image::create_empty(map_width, map_height, false, Image::FORMAT_RF);
 
   for (int y = 0; y < map_height; y++)
   {
-    Array row = matrix[y];
     for (int x = 0; x < map_width; x++)
     {
-      int cell = row[x];
-      float normalized = static_cast<float>(cell - lowest_value) / static_cast<float>(range);
-      image->set_pixel(x, y, Color(normalized, normalized, normalized));
+      float normalized = ((*src)[y * map_width + x] - lowest_f) / range;
+      image->set_pixel(x, y, Color(normalized, 0.0f, 0.0f));
     }
   }
 
+  image->generate_mipmaps();
   return ImageTexture::create_from_image(image);
 }
 
@@ -199,9 +226,27 @@ void TerrainLOD::generate(Array matrix)
   _rebuild_chunks();
 }
 
+Ref<ShaderMaterial> TerrainLOD::_get_lod_material(const Ref<ShaderMaterial> &base, int lod)
+{
+  if (lod == 0)
+    return base;
+  while (static_cast<int>(lod_materials.size()) < lod)
+  {
+    int next_lod = static_cast<int>(lod_materials.size()) + 1;
+    Ref<ShaderMaterial> clone = Ref<ShaderMaterial>(Object::cast_to<ShaderMaterial>(base->duplicate().ptr()));
+    if (clone.is_null())
+      return base;
+    clone->set_shader_parameter("height_lod", static_cast<float>(next_lod));
+    lod_materials.push_back(clone);
+  }
+  return lod_materials[lod - 1];
+}
+
 void TerrainLOD::_rebuild_chunks()
 {
   clear_terrain();
+  lod_materials.clear();
+  base_material.unref();
 
   if (height_texture.is_null())
     return;
@@ -214,18 +259,25 @@ void TerrainLOD::_rebuild_chunks()
   Ref<ShaderMaterial> material = Object::cast_to<Object>(dm_node)->get("terrain_material");
   if (material.is_null())
     return;
+  base_material = material;
 
   float amplitude = dm_node->get("amplitude");
   current_amplitude = amplitude;
+  terrain_size = dm_node->get("terrain_size");
+  if (terrain_size <= 0.0f)
+    terrain_size = 500.0f;
 
-  // Set the height texture on the shared material
   material->set_shader_parameter("height_texture", height_texture);
+  int tex_w = height_image.is_valid() ? height_image->get_width() : 1;
+  int tex_h = height_image.is_valid() ? height_image->get_height() : 1;
+  if (tex_w > 0 && tex_h > 0)
+  {
+    material->set_shader_parameter("texel_size", Vector2(1.0f / static_cast<float>(tex_w), 1.0f / static_cast<float>(tex_h)));
+  }
 
   float chunk_world_size = terrain_size / static_cast<float>(chunk_count);
   float base_dist = chunk_world_size * 2.0f * lod_distance_multiplier;
   float half_terrain = terrain_size * 0.5f;
-  // Margin: diagonal half-extent of chunk footprint for range overlap
-  float margin = chunk_world_size * 0.7071f; // sqrt(2)/2
 
   chunks.reserve(static_cast<size_t>(chunk_count) * chunk_count);
 
@@ -259,35 +311,35 @@ void TerrainLOD::_rebuild_chunks()
 
         MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
         mesh_instance->set_mesh(mesh);
-        mesh_instance->set_material_override(material);
+        mesh_instance->set_material_override(_get_lod_material(material, lod));
 
-        // Visibility range distances with margin so chunks don't disappear
-        // while their edges are still on screen
+        // Adjacent LOD ranges meet at (2*lod+1)*base_dist with hard cutoffs —
+        // FADE_SELF dither left the whole terrain visibly fading as the camera
+        // flew out, because every chunk crossed a transition zone together.
         float range_begin = 0.0f;
         float range_end = 0.0f;
+        bool is_first = (lod == 0);
+        bool is_last = (lod == lod_levels - 1);
 
-        if (lod == 0)
+        if (is_first)
         {
           range_begin = 0.0f;
-          range_end = base_dist + margin;
+          range_end = base_dist;
         }
-        else if (lod == lod_levels - 1)
+        else if (is_last)
         {
-          float raw_begin = base_dist * static_cast<float>(2 * lod - 1);
-          range_begin = std::max(0.0f, raw_begin - margin);
+          range_begin = base_dist * static_cast<float>(2 * lod - 1);
           range_end = 0.0f; // 0 means infinite
         }
         else
         {
-          float raw_begin = base_dist * static_cast<float>(2 * lod - 1);
-          float raw_end = base_dist * static_cast<float>(2 * lod + 1);
-          range_begin = std::max(0.0f, raw_begin - margin);
-          range_end = raw_end + margin;
+          range_begin = base_dist * static_cast<float>(2 * lod - 1);
+          range_end = base_dist * static_cast<float>(2 * lod + 1);
         }
 
         mesh_instance->set_visibility_range_begin(range_begin);
         mesh_instance->set_visibility_range_end(range_end);
-        mesh_instance->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_SELF);
+        mesh_instance->set_visibility_range_fade_mode(GeometryInstance3D::VISIBILITY_RANGE_FADE_DISABLED);
 
         chunk_parent->add_child(mesh_instance);
       }
@@ -353,6 +405,7 @@ Ref<ArrayMesh> TerrainLOD::_build_chunk_mesh(int chunk_x, int chunk_z, int subdi
   }
 
   st->generate_normals();
+  st->generate_tangents();
   Ref<ArrayMesh> mesh = st->commit();
 
   // Set custom AABB to account for vertex shader height displacement.

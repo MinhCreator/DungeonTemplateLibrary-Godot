@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://debq0gajwu5wn" path="res://scripts/terrain/PerlinLoopIsland.gd" id="1_e7ot1"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_f717q"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_sl50d"]
+[ext_resource type="Script" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
 [node name="PerlinLoopIsland" type="Node3D"]
 script = ExtResource("1_e7ot1")
@@ -13,13 +14,18 @@ script = ExtResource("2_f717q")
 [node name="DrawMatrix3D" type="Node3D" parent="."]
 visible = false
 script = ExtResource("3_sl50d")
-amplitude = 27.5
-sea_level = 14.145
-beach_level = 1.005
-grass_level = 11.005
-cliff_level = 5.16
-snow_level = 7.295
+amplitude = 275.0
+sea_level = 140.0
+beach_level = 10.0
+grass_level = 55.0
+cliff_level = 50.0
+snow_level = 73.0
+terrain_size = 2000.0
 
 [node name="TerrainLOD" type="TerrainLOD" parent="."]
-collision_radius = 80.0
+collision_radius = 120.0
+draw_matrix_3d = NodePath("../DrawMatrix3D")
+
+[node name="WaterPlane" type="Node3D" parent="."]
+script = ExtResource("water_plane_script")
 draw_matrix_3d = NodePath("../DrawMatrix3D")

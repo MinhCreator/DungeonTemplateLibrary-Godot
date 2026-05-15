@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://cm2wqrher1hd7" path="res://scripts/terrain/DiamondSquareAverageIsland.gd" id="1_hjy4y"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_3pt6a"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_2wqw4"]
+[ext_resource type="Script" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
 [node name="DiamondSquareAverageIsland" type="Node3D"]
 script = ExtResource("1_hjy4y")
@@ -15,12 +16,20 @@ script = ExtResource("2_3pt6a")
 [node name="DrawMatrix3D" type="Node3D" parent="."]
 visible = false
 script = ExtResource("3_2wqw4")
-amplitude = 46.3
-sea_level = 23.855
-grass_level = 10.125
-cliff_level = 10.085
-snow_level = 15.77
+amplitude = 460.0
+sea_level = 235.0
+beach_level = 5.0
+grass_level = 100.0
+cliff_level = 100.0
+snow_level = 160.0
+terrain_size = 2052.0
 
 [node name="TerrainLOD" type="TerrainLOD" parent="."]
-collision_radius = 80.0
+chunk_count = 16
+lod_levels = 5
+collision_radius = 150.0
+draw_matrix_3d = NodePath("../DrawMatrix3D")
+
+[node name="WaterPlane" type="Node3D" parent="."]
+script = ExtResource("water_plane_script")
 draw_matrix_3d = NodePath("../DrawMatrix3D")

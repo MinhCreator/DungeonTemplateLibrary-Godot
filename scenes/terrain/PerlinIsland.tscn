@@ -3,22 +3,38 @@
 [ext_resource type="Script" uid="uid://dauvtixgh5q12" path="res://scripts/terrain/PerlinIsland.gd" id="1_eo5bj"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_f3c86"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_u4oar"]
+[ext_resource type="Script" uid="uid://b6xfo056yq8lt" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
 [node name="PerlinIsland" type="Node3D" unique_id=468117199]
 script = ExtResource("1_eo5bj")
+map_size = 1000
+frequency = 4.0
+octaves = 12
 
 [node name="DrawMatrix2D" type="Node2D" parent="." unique_id=2003808473]
+visible = false
 script = ExtResource("2_f3c86")
 
 [node name="DrawMatrix3D" type="Node3D" parent="." unique_id=1308558016]
 visible = false
 script = ExtResource("3_u4oar")
-amplitude = 17.49
-sea_level = 8.895
-beach_level = 0.56
-grass_level = 9.42
-cliff_level = 3.155
-snow_level = 4.29
+amplitude = 100.0
+sea_level = 52.07
+beach_level = 0.0
+grass_level = 3.075
+cliff_level = 12.965
+snow_level = 24.025
+terrain_size = 1000.0
+water_wave_speed = 0.045
+water_wave_scale = 4.8
+water_wave_strength = 0.195
+water_edge_intensity = 1.085
 
-[node name="TerrainLOD" type="TerrainLOD" parent="." unique_id=1505325341]
+[node name="TerrainLOD" type="TerrainLOD" parent="." unique_id=264730838]
 draw_matrix_3d = NodePath("../DrawMatrix3D")
+
+[node name="WaterPlane" type="Node3D" parent="." unique_id=1458393881]
+script = ExtResource("water_plane_script")
+draw_matrix_3d = NodePath("../DrawMatrix3D")
+subdivisions = 4
+size_margin = 2.58

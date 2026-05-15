@@ -3,45 +3,68 @@ shader_type spatial;
 render_mode diffuse_burley, specular_schlick_ggx, cull_back;
 
 // Textures and scaling
-uniform sampler2D height_texture;
-uniform float amplitude : hint_range(0, 100) = 50.0;
+uniform sampler2D height_texture : filter_linear_mipmap;
 
-// Sea level
-uniform float sea_level : hint_range(0, 100) = 10.0;
+// Mipmap level used when sampling the heightmap (per-LOD chunk bias).
+uniform float height_lod : hint_range(0.0, 8.0) = 0.0;
+uniform float amplitude : hint_range(0, 1000) = 200.0;
 
-// Thresholds for different terrain zones (above sea_level)
-uniform float beach_level : hint_range(0, 100) = 1.0;
-uniform float cliff_level : hint_range(0, 100) = 20.0;
-uniform float snow_level  : hint_range(0, 100) = 45.0;
+// Sea level — used as the zero-reference for beach/grass/cliff/snow
+// thresholds. The land mesh is NOT clamped to sea level, so the separate
+// water plane sees real seafloor geometry underneath.
+uniform float sea_level : hint_range(0, 1000) = 100.0;
 
-// Colors for different zones
-uniform vec3 ocean_color  : source_color = vec3(0.0, 0.3, 0.6);
-uniform vec3 ocean_deep_color : source_color = vec3(0.0, 0.15, 0.35);
+// Thresholds for different terrain zones (above sea_level). beach_level is
+// the nominal top of the sand band (= start of grass).
+uniform float beach_level : hint_range(-50.0, 1000) = 5.0;
+uniform float cliff_level : hint_range(0, 1000) = 60.0;
+uniform float snow_level  : hint_range(0, 1000) = 150.0;
+
+// Safety floor for the sand band: if beach_level is configured at or below
+// the waterline, sand is still rendered up to this height so the shoreline
+// always shows beach next to the water plane.
+uniform float min_shore_sand : hint_range(0.0, 30.0) = 2.0;
+// Fraction of biome_boundary_strength applied (upward only) to jitter the
+// beach→grass line off a perfect iso-contour. Kept small so beach_level
+// stays the dominant control.
+uniform float beach_jitter_amount : hint_range(0.0, 1.0) = 0.2;
+// Depth below sea level over which the seafloor fades from floor_color to
+// beach_color (the wet beach visible through clear shallow water).
+uniform float underwater_sand_depth : hint_range(0.0, 50.0) = 6.0;
+
+// Colors for different zones. floor_color is the seafloor tint that shows
+// through the (transparent) water near shore.
+uniform vec3 floor_color  : source_color = vec3(0.25, 0.30, 0.25);
 uniform vec3 beach_color  : source_color = vec3(0.9, 0.8, 0.4);
 uniform vec3 grass_color  : source_color = vec3(0.2, 0.6, 0.1);
 uniform vec3 cliff_color  : source_color = vec3(0.5, 0.5, 0.4);
 uniform vec3 snow_color   : source_color = vec3(1.0, 1.0, 1.0);
 
 // Blend width for smooth transitions between terrain zones
-uniform float blend_width : hint_range(0.0, 5.0) = 0.3;
+uniform float blend_width : hint_range(0.0, 50.0) = 3.0;
 
 // Slope-based cliff blending
 uniform float slope_cliff_threshold : hint_range(0.0, 1.0) = 0.6;
 uniform float slope_cliff_blend : hint_range(0.0, 0.5) = 0.15;
 
-// Color variation noise
+// Color variation noise (world-space wavelength in world units)
 uniform float noise_strength : hint_range(0.0, 0.2) = 0.06;
-uniform float noise_scale : hint_range(1.0, 200.0) = 60.0;
+uniform float noise_scale : hint_range(1.0, 200.0) = 18.0;
 
-// Water settings
-uniform float water_specular : hint_range(0.0, 1.0) = 0.8;
-uniform float water_metallic : hint_range(0.0, 1.0) = 0.1;
-uniform float water_roughness : hint_range(0.0, 1.0) = 0.05;
-uniform float water_fresnel_power : hint_range(0.5, 8.0) = 3.0;
-uniform vec3 water_fresnel_color : source_color = vec3(0.5, 0.7, 0.9);
+// Biome boundary noise: jitters the height thresholds so beach/grass/cliff/snow
+// lines are no longer straight iso-contours. Wavelength in world units,
+// strength in height units.
+uniform float biome_boundary_scale : hint_range(1.0, 400.0) = 80.0;
+uniform float biome_boundary_strength : hint_range(0.0, 40.0) = 10.0;
 
 // Heightmap texel size (set from code or estimate)
 uniform vec2 texel_size = vec2(0.002, 0.002);
+
+// Stride (in texels) used for normal gradient sampling. Wider = smoother.
+uniform float normal_sample_stride : hint_range(0.5, 8.0) = 2.0;
+
+varying vec3 v_heightmap_normal;
+varying vec3 v_world_pos;
 
 // Simple hash-based noise (no texture needed)
 float hash(vec2 p) {
@@ -53,7 +76,7 @@ float hash(vec2 p) {
 float value_noise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f); // smoothstep interpolation
+    f = f * f * (3.0 - 2.0 * f);
 
     float a = hash(i);
     float b = hash(i + vec2(1.0, 0.0));
@@ -75,82 +98,82 @@ float fbm(vec2 p) {
 }
 
 void vertex() {
-    float height_val = texture(height_texture, UV).r * amplitude;
-    if (height_val < sea_level) {
-        height_val = sea_level;
-    }
+    // Displacement always samples mipmap 0 so adjacent chunks at different
+    // LODs agree on height at their shared edge — otherwise you can see
+    // through the seams.
+    float height_val = textureLod(height_texture, UV, 0.0).r * amplitude;
     VERTEX.y += height_val;
+
+    // Normals can still widen their sample stride at lower LODs for smoother
+    // distant shading; mismatched normals between chunks don't cause gaps.
+    float stride = normal_sample_stride * exp2(height_lod);
+    vec2 ns = texel_size * stride;
+    float h_r = textureLod(height_texture, UV + vec2(ns.x, 0.0), 0.0).r * amplitude;
+    float h_l = textureLod(height_texture, UV - vec2(ns.x, 0.0), 0.0).r * amplitude;
+    float h_u = textureLod(height_texture, UV + vec2(0.0, ns.y), 0.0).r * amplitude;
+    float h_d = textureLod(height_texture, UV - vec2(0.0, ns.y), 0.0).r * amplitude;
+    v_heightmap_normal = normalize(vec3(h_l - h_r, 2.0 * stride, h_d - h_u));
+    NORMAL = v_heightmap_normal;
+
+    v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
-    // --- Per-pixel height sampling ---
-    float raw_height = texture(height_texture, UV).r * amplitude;
+    float raw_height = textureLod(height_texture, UV, height_lod).r * amplitude;
     float h = raw_height - sea_level;
-    bool is_water = h <= 0.001;
 
-    // --- Recalculate normals from heightmap ---
-    float h_r = texture(height_texture, UV + vec2(texel_size.x, 0.0)).r * amplitude;
-    float h_l = texture(height_texture, UV - vec2(texel_size.x, 0.0)).r * amplitude;
-    float h_u = texture(height_texture, UV + vec2(0.0, texel_size.y)).r * amplitude;
-    float h_d = texture(height_texture, UV - vec2(0.0, texel_size.y)).r * amplitude;
-
-    // Tangent-space normal from heightmap gradients
+    float h_r = textureLod(height_texture, UV + vec2(texel_size.x, 0.0), height_lod).r * amplitude;
+    float h_l = textureLod(height_texture, UV - vec2(texel_size.x, 0.0), height_lod).r * amplitude;
+    float h_u = textureLod(height_texture, UV + vec2(0.0, texel_size.y), height_lod).r * amplitude;
+    float h_d = textureLod(height_texture, UV - vec2(0.0, texel_size.y), height_lod).r * amplitude;
     vec3 heightmap_normal = normalize(vec3(h_l - h_r, 2.0, h_d - h_u));
 
-    // --- Slope calculation ---
-    float slope = 1.0 - heightmap_normal.y; // 0 = flat, 1 = vertical
+    float slope = 1.0 - heightmap_normal.y;
 
-    // --- Height-based color blending ---
-    float beach_t = smoothstep(-blend_width * 0.5, blend_width * 0.5, h);
-    float grass_t = smoothstep(beach_level - blend_width * 0.5, beach_level + blend_width * 0.5, h);
-    float cliff_t = smoothstep(cliff_level - blend_width * 0.5, cliff_level + blend_width * 0.5, h);
-    float snow_t  = smoothstep(snow_level - blend_width * 0.5, snow_level + blend_width * 0.5, h);
+    // Symmetric noise wanders the upper biome boundaries off straight contours.
+    float boundary_offset = (fbm(v_world_pos.xz / max(biome_boundary_scale, 1.0)) - 0.5) * 2.0 * biome_boundary_strength;
+    float h_biome = h + boundary_offset;
+    // Asymmetric, scaled-down jitter for the beach→grass boundary: only push
+    // the grass line higher (never into the sand strip) and only by a small
+    // fraction so beach_level remains the visible control.
+    float beach_jitter = max(boundary_offset, 0.0) * beach_jitter_amount;
 
-    vec3 color = ocean_color;
-    color = mix(color, beach_color, beach_t);
+    // Effective top of sand: beach_level is authoritative; min_shore_sand only
+    // catches the case where it's configured at or below the waterline.
+    float beach_top = max(beach_level, min_shore_sand) + beach_jitter;
+
+    // Wet beach: floor_color fades up to beach_color across the shallow shelf.
+    float underwater_sand_t = smoothstep(-max(underwater_sand_depth, 0.001), 0.0, h);
+    vec3 color = mix(floor_color, beach_color, underwater_sand_t);
+
+    // Sand → grass.
+    float grass_t = smoothstep(beach_top - blend_width * 0.5, beach_top + blend_width * 0.5, h);
     color = mix(color, grass_color, grass_t);
+
+    // Higher biome bands keep symmetric noise so the cliff/snow lines wander
+    // naturally on both sides.
+    float cliff_t = smoothstep(cliff_level - blend_width * 0.5, cliff_level + blend_width * 0.5, h_biome);
+    float snow_t  = smoothstep(snow_level - blend_width * 0.5, snow_level + blend_width * 0.5, h_biome);
     color = mix(color, cliff_color, cliff_t);
     color = mix(color, snow_color, snow_t);
 
-    // --- Slope-based cliff override ---
     float slope_factor = smoothstep(
         slope_cliff_threshold - slope_cliff_blend,
         slope_cliff_threshold + slope_cliff_blend,
         slope
     );
-    if (!is_water) {
-        color = mix(color, cliff_color, slope_factor);
-    }
+    // Suppress the slope-driven rock overlay inside the shore band so steep
+    // little dunes at the waterline still read as sand, not cliff.
+    float above_shore = smoothstep(beach_top * 0.5, max(beach_top * 1.5, beach_top + blend_width), h);
+    color = mix(color, cliff_color, slope_factor * above_shore);
 
-    // --- Color variation noise ---
-    if (!is_water) {
-        float n = fbm(UV * noise_scale);
-        color += n * noise_strength;
-    }
+    // World-space color variation so the pattern is continuous across chunks.
+    float n = fbm(v_world_pos.xz / max(noise_scale, 1.0));
+    color += (n - 0.5) * 2.0 * noise_strength;
 
-    // --- Apply normal map ---
-    if (!is_water) {
-        NORMAL_MAP = heightmap_normal * 0.5 + 0.5;
-    }
-
-    // --- Water shading ---
-    if (is_water) {
-        // Depth-based color (deeper = darker)
-        float depth = clamp(-h / 10.0, 0.0, 1.0);
-        color = mix(ocean_color, ocean_deep_color, depth);
-
-        // Fresnel effect
-        float fresnel = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), water_fresnel_power);
-        color = mix(color, water_fresnel_color, fresnel * 0.4);
-
-        SPECULAR = water_specular;
-        METALLIC = water_metallic;
-        ROUGHNESS = water_roughness;
-    } else {
-        ROUGHNESS = mix(0.85, 0.95, slope_factor);
-        METALLIC = 0.0;
-        SPECULAR = 0.2;
-    }
-
+    NORMAL_MAP = heightmap_normal * 0.5 + 0.5;
+    ROUGHNESS = mix(0.85, 0.95, slope_factor);
+    METALLIC = 0.0;
+    SPECULAR = 0.2;
     ALBEDO = color;
 }

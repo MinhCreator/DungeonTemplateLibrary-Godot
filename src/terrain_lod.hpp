@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/collision_shape3d.hpp>
 #include <godot_cpp/classes/concave_polygon_shape3d.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/node_path.hpp>
 
 #include <vector>
@@ -32,9 +33,6 @@ namespace godot
     void _process(double delta) override;
 
     // Property getters/setters
-    void set_terrain_size(float p_size);
-    float get_terrain_size() const;
-
     void set_chunk_count(int p_count);
     int get_chunk_count() const;
 
@@ -79,6 +77,7 @@ namespace godot
 
     Ref<ArrayMesh> _build_chunk_mesh(int chunk_x, int chunk_z, int subdivisions, float amplitude);
     Ref<ImageTexture> _create_height_texture(const Array &matrix);
+    Ref<ShaderMaterial> _get_lod_material(const Ref<ShaderMaterial> &base, int lod);
     void _rebuild_chunks();
     void _update_colliders();
     void _build_chunk_collision(ChunkData &chunk);
@@ -86,7 +85,7 @@ namespace godot
     float _chunk_distance_sq_xz(const ChunkData &chunk, const Vector3 &p) const;
     float _sample_height_bilinear(float u, float v) const;
 
-    float terrain_size = 500.0f;
+    float terrain_size = 2000.0f;
     int chunk_count = 8;
     int lod_levels = 3;
     int lod0_subdivisions = 64;
@@ -97,12 +96,14 @@ namespace godot
     float current_amplitude = 0.0f;
 
     bool collision_enabled = true;
-    float collision_radius = 50.0f;
-    int collision_subdivisions = 32;
+    float collision_radius = 100.0f;
+    int collision_subdivisions = 64;
     float collision_update_interval = 0.2f;
     float collision_timer = 0.0f;
     NodePath player_path;
 
+    Ref<ShaderMaterial> base_material;
     std::vector<ChunkData> chunks;
+    std::vector<Ref<ShaderMaterial>> lod_materials;
   };
 }

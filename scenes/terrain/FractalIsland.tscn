@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://chjogurqpmy67" path="res://scripts/terrain/FractalIsland.gd" id="1_llfvs"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_wl32a"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_o7bwd"]
+[ext_resource type="Script" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
 [node name="FractalIsland" type="Node3D"]
 script = ExtResource("1_llfvs")
@@ -16,16 +17,20 @@ script = ExtResource("2_wl32a")
 [node name="DrawMatrix3D" type="Node3D" parent="."]
 visible = false
 script = ExtResource("3_o7bwd")
-amplitude = 22.07
-sea_level = 6.29
-beach_level = 1.315
-grass_level = 10.39
-cliff_level = 9.49
-snow_level = 12.555
+amplitude = 220.0
+sea_level = 65.0
+beach_level = 13.0
+grass_level = 50.0
+cliff_level = 95.0
+snow_level = 125.0
+terrain_size = 2000.0
 
 [node name="TerrainLOD" type="TerrainLOD" parent="."]
-terrain_size = 1000.0
 chunk_count = 16
 lod_levels = 5
-collision_radius = 120.0
+collision_radius = 150.0
+draw_matrix_3d = NodePath("../DrawMatrix3D")
+
+[node name="WaterPlane" type="Node3D" parent="."]
+script = ExtResource("water_plane_script")
 draw_matrix_3d = NodePath("../DrawMatrix3D")
