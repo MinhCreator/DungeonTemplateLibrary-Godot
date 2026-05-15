@@ -7,7 +7,7 @@
 
 [node name="PerlinIsland" type="Node3D" unique_id=468117199]
 script = ExtResource("1_eo5bj")
-map_size = 1000
+map_size = 4000
 frequency = 4.0
 octaves = 12
 
@@ -25,6 +25,10 @@ grass_level = 3.075
 cliff_level = 12.965
 snow_level = 24.025
 terrain_size = 1000.0
+max_subdivisions = 512
+paths_enabled = true
+roads_enabled = true
+path_max_grade = 0.08
 water_wave_speed = 0.045
 water_wave_scale = 4.8
 water_wave_strength = 0.195

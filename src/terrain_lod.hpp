@@ -88,7 +88,7 @@ namespace godot
     float terrain_size = 2000.0f;
     int chunk_count = 8;
     int lod_levels = 3;
-    int lod0_subdivisions = 64;
+    int lod0_subdivisions = 128;
     float lod_distance_multiplier = 1.0f;
     NodePath draw_matrix_3d_path;
     Ref<ImageTexture> height_texture;

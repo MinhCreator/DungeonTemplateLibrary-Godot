@@ -15,6 +15,32 @@ signal terrain_generated
 @export var terrain_size: float = 500.0: set = _set_terrain_size
 @export var max_subdivisions: int = 256
 
+# --- Paths & Roads ---------------------------------------------------------
+# Both layers share path_road_seed so a given seed reproduces the whole
+# network. Paths are narrow/winding trails; roads are wider and graded
+# flatter. Routes only ever run above sea level and pathfind *around* steep
+# terrain rather than straight over it. All of the heavy lifting (blur,
+# waypoints, full-resolution A*, carve) happens in the C++ TerrainBuilder.
+@export_group("Paths & Roads")
+@export var paths_enabled: bool = false: set = _set_paths_enabled
+@export var roads_enabled: bool = false: set = _set_roads_enabled
+@export var path_road_seed: int = 0: set = _set_path_road_seed
+# Number of waypoints connected into each network (min-spanning-tree).
+@export var path_node_count: int = 7: set = _set_path_node_count
+@export var road_node_count: int = 5: set = _set_road_node_count
+# Carved track width, in world units.
+@export var path_width: float = 4.0: set = _set_path_width
+@export var road_width: float = 11.0: set = _set_road_width
+# Max longitudinal grade (rise/run) of the carved centerline. Lower = flatter
+# road; this is the "don't angle it too extremely" control.
+@export var path_max_grade: float = 0.14: set = _set_path_max_grade
+@export var road_max_grade: float = 0.08: set = _set_road_max_grade
+# 0 = ignore terrain steepness when routing, 1 = aggressively detour around
+# hills/mountains instead of climbing them.
+@export var hill_avoidance: float = 0.7: set = _set_hill_avoidance
+@export var path_color: Color = Color("#6b5a3e"): set = _set_path_color
+@export var road_color: Color = Color("#80807a"): set = _set_road_color
+
 @export_group("Water Animation")
 @export var water_wave_speed: float = 0.35: set = _set_water_wave_speed
 @export var water_wave_scale: float = 80.0: set = _set_water_wave_scale
@@ -30,6 +56,14 @@ var terrain_material := ShaderMaterial.new()
 var water_material := ShaderMaterial.new()
 var terrain_shader: Shader = load("res://assets/shaders/terrain.gdshader")
 var water_shader: Shader = load("res://assets/shaders/water.gdshader")
+
+# The carved heightmap + path/road mask, produced by TerrainBuilder.
+# TerrainLOD reads these directly so the visible LOD mesh, its colliders, and
+# the water plane all share one deformed source of truth.
+var height_image: Image
+var height_texture: ImageTexture
+var path_mask_texture: ImageTexture
+
 var default_colors: Array[Color] = [
 	Color.DARK_BLUE,
 	Color("#e5d9c2"),
@@ -38,6 +72,11 @@ var default_colors: Array[Color] = [
 	Color("#7c8d4c"),
 	Color.DARK_OLIVE_GREEN
 ]
+
+# Cached so a Paths & Roads tweak in the editor can regenerate without the
+# parent terrain script re-running the (expensive) DTL pass when possible.
+var _last_matrix: Array = []
+var _initialized: bool = false
 
 func _ready():
 	terrain_material.shader = terrain_shader
@@ -97,78 +136,115 @@ func _set_water_edge_intensity(new_value: float):
 	water_edge_intensity = new_value
 	water_material.set_shader_parameter("edge_intensity", new_value)
 
+# --- Paths & Roads setters: these change heightmap generation, so they need a
+# full regenerate. Guarded by _initialized so scene load doesn't thrash.
+func _set_paths_enabled(v: bool):
+	paths_enabled = v
+	_regenerate()
+
+func _set_roads_enabled(v: bool):
+	roads_enabled = v
+	_regenerate()
+
+func _set_path_road_seed(v: int):
+	path_road_seed = v
+	_regenerate()
+
+func _set_path_node_count(v: int):
+	path_node_count = maxi(2, v)
+	_regenerate()
+
+func _set_road_node_count(v: int):
+	road_node_count = maxi(2, v)
+	_regenerate()
+
+func _set_path_width(v: float):
+	path_width = maxf(0.5, v)
+	_regenerate()
+
+func _set_road_width(v: float):
+	road_width = maxf(0.5, v)
+	_regenerate()
+
+func _set_path_max_grade(v: float):
+	path_max_grade = clampf(v, 0.01, 1.0)
+	_regenerate()
+
+func _set_road_max_grade(v: float):
+	road_max_grade = clampf(v, 0.01, 1.0)
+	_regenerate()
+
+func _set_hill_avoidance(v: float):
+	hill_avoidance = clampf(v, 0.0, 1.0)
+	_regenerate()
+
+func _set_path_color(v: Color):
+	path_color = v
+	terrain_material.set_shader_parameter("path_color", v)
+
+func _set_road_color(v: Color):
+	road_color = v
+	terrain_material.set_shader_parameter("road_color", v)
+
+func _regenerate():
+	if not _initialized:
+		return
+	var parent := get_parent()
+	if parent != null and parent.has_method("draw_island"):
+		# Re-runs every renderer (DrawMatrix3D + TerrainLOD + water) so the
+		# visible LOD mesh and colliders pick up the new carve too.
+		parent.draw_island()
+	elif not _last_matrix.is_empty():
+		draw_terrain(_last_matrix)
+
+func _build_config() -> Dictionary:
+	return {
+		"amplitude": amplitude,
+		"sea_level": sea_level,
+		"terrain_size": terrain_size,
+		"paths_enabled": paths_enabled,
+		"roads_enabled": roads_enabled,
+		"seed": path_road_seed,
+		"path_node_count": path_node_count,
+		"road_node_count": road_node_count,
+		"path_width": path_width,
+		"road_width": road_width,
+		"path_max_grade": path_max_grade,
+		"road_max_grade": road_max_grade,
+		"hill_avoidance": hill_avoidance,
+	}
+
+# Runs the C++ pipeline (blur -> path/road carve -> textures) and caches the
+# results. Kept named draw_heightmap for the renderer call sites.
 func draw_heightmap(matrix: Array) -> ImageTexture:
-	var height: int = matrix.size()
-	var width: int = matrix[0].size()
-
-	var image: Image = Image.create_empty(width, height, false, Image.FORMAT_RF)
-
-	var highest_value: int = -9999
-	var lowest_value: int = 9999
-
-	var raw: PackedFloat32Array = PackedFloat32Array()
-	raw.resize(width * height)
-	for y in range(height):
-		for x in range(width):
-			var cell: int = matrix[y][x]
-			raw[y * width + x] = float(cell)
-			if cell < lowest_value:
-				lowest_value = cell
-			if cell > highest_value:
-				highest_value = cell
-
-	var range_f: float = float(highest_value - lowest_value)
-	if range_f == 0.0:
-		range_f = 1.0
-
-	# Two 3x3 box blur passes (~5x5 Gaussian) smooth DTL's integer step
-	# quantization — one pass isn't enough for dense maps with many octaves.
-	var buf_a: PackedFloat32Array = raw
-	var buf_b: PackedFloat32Array = PackedFloat32Array()
-	buf_b.resize(width * height)
-	for _pass in range(2):
-		for y in range(height):
-			for x in range(width):
-				var sum: float = 0.0
-				var count: int = 0
-				for dy in range(-1, 2):
-					var ny: int = y + dy
-					if ny < 0 or ny >= height:
-						continue
-					for dx in range(-1, 2):
-						var nx: int = x + dx
-						if nx < 0 or nx >= width:
-							continue
-						sum += buf_a[ny * width + nx]
-						count += 1
-				buf_b[y * width + x] = sum / float(count)
-		var tmp: PackedFloat32Array = buf_a
-		buf_a = buf_b
-		buf_b = tmp
-
-	for y in range(height):
-		for x in range(width):
-			var normalized: float = (buf_a[y * width + x] - float(lowest_value)) / range_f
-			image.set_pixel(x, y, Color(normalized, 0.0, 0.0))
-
-	var cx := width / 2
-	var cy := height / 2
-	center_height = image.get_pixel(cx, cy).r * amplitude
-
-	image.generate_mipmaps()
-	return ImageTexture.create_from_image(image)
+	var builder := TerrainBuilder.new()
+	var result: Dictionary = builder.build(matrix, _build_config())
+	height_texture = result.get("height")
+	path_mask_texture = result.get("mask")
+	height_image = height_texture.get_image() if height_texture != null else null
+	if height_image != null:
+		var cx := height_image.get_width() / 2
+		var cy := height_image.get_height() / 2
+		center_height = height_image.get_pixel(cx, cy).r * amplitude
+	return height_texture
 
 func draw_terrain(matrix: Array):
+	_last_matrix = matrix
 	for child in get_children():
 		child.queue_free()
 
 	terrain_material.shader = terrain_shader
 	water_material.shader = water_shader
 	var height_tex := draw_heightmap(matrix)
+	if height_tex == null:
+		return
 	var tex_size := height_tex.get_size()
 	terrain_material.set_shader_parameter("amplitude", amplitude)
 	terrain_material.set_shader_parameter("height_texture", height_tex)
 	terrain_material.set_shader_parameter("texel_size", Vector2(1.0 / tex_size.x, 1.0 / tex_size.y))
+	terrain_material.set_shader_parameter("path_mask", path_mask_texture)
+	terrain_material.set_shader_parameter("path_color", path_color)
+	terrain_material.set_shader_parameter("road_color", road_color)
 
 	# Water material shares the heightmap so it can sample seafloor depth
 	# per-fragment for color gradient, alpha, and shoreline foam.
@@ -189,4 +265,5 @@ func draw_terrain(matrix: Array):
 	mesh.mesh = quadmesh
 	add_child(mesh)
 
+	_initialized = true
 	terrain_generated.emit()

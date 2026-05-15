@@ -4,6 +4,7 @@
 #include "DTL.hpp"
 #include "dtl-godot.hpp"
 #include "terrain_lod.hpp"
+#include "terrain_builder.hpp"
 
 #include <gdextension_interface.h>
 #include <godot_cpp/core/defs.hpp>
@@ -21,6 +22,7 @@ void initialize_module(ModuleInitializationLevel p_level)
   // Register your DTL class
   GDREGISTER_CLASS(DTL);
   GDREGISTER_CLASS(TerrainLOD);
+  GDREGISTER_CLASS(TerrainBuilder);
 }
 
 void uninitialize_module(ModuleInitializationLevel p_level)

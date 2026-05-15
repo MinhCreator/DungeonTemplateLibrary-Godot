@@ -217,11 +217,25 @@ void TerrainLOD::generate(Array matrix)
     return;
   }
 
-  height_texture = _create_height_texture(matrix);
-  if (height_texture.is_null())
-    return;
-
-  height_image = height_texture->get_image();
+  // Prefer the heightmap DrawMatrix3D already built: it owns the path/road
+  // carve, so sharing it keeps the visible LOD mesh, its colliders, and the
+  // water plane all deforming off one source. (DrawMatrix3D.draw_terrain runs
+  // before TerrainLOD.generate in every terrain script.) Fall back to
+  // rebuilding from the raw matrix only if it hasn't generated yet.
+  Ref<ImageTexture> dm_tex = dm_node->get("height_texture");
+  if (dm_tex.is_valid())
+  {
+    height_texture = dm_tex;
+    Ref<Image> dm_img = dm_node->get("height_image");
+    height_image = dm_img.is_valid() ? dm_img : height_texture->get_image();
+  }
+  else
+  {
+    height_texture = _create_height_texture(matrix);
+    if (height_texture.is_null())
+      return;
+    height_image = height_texture->get_image();
+  }
 
   _rebuild_chunks();
 }

@@ -57,6 +57,13 @@ uniform float noise_scale : hint_range(1.0, 200.0) = 18.0;
 uniform float biome_boundary_scale : hint_range(1.0, 400.0) = 80.0;
 uniform float biome_boundary_strength : hint_range(0.0, 40.0) = 10.0;
 
+// Path/road mask. R = path layer, G = road layer (carved + stamped in
+// DrawMatrix3D). Defaults to black so terrain with the feature off is
+// unaffected even before a mask is assigned.
+uniform sampler2D path_mask : hint_default_black, filter_linear_mipmap;
+uniform vec3 path_color : source_color = vec3(0.42, 0.35, 0.24);
+uniform vec3 road_color : source_color = vec3(0.50, 0.50, 0.48);
+
 // Heightmap texel size (set from code or estimate)
 uniform vec2 texel_size = vec2(0.002, 0.002);
 
@@ -171,8 +178,20 @@ void fragment() {
     float n = fbm(v_world_pos.xz / max(noise_scale, 1.0));
     color += (n - 0.5) * 2.0 * noise_strength;
 
+    // Paths/roads: tint the carved track, but only above the waterline so a
+    // route that grazes the shore never paints onto submerged seafloor.
+    vec2 pr = textureLod(path_mask, UV, height_lod).rg;
+    float land = smoothstep(0.0, blend_width, h);
+    float path_m = pr.r * land;
+    float road_m = pr.g * land;
+    color = mix(color, path_color, path_m);
+    color = mix(color, road_color, road_m);
+    float track = max(path_m, road_m);
+
     NORMAL_MAP = heightmap_normal * 0.5 + 0.5;
-    ROUGHNESS = mix(0.85, 0.95, slope_factor);
+    // Graded tracks read as packed dirt/stone: less of the slope-rock
+    // roughness, a touch smoother than open terrain.
+    ROUGHNESS = mix(mix(0.85, 0.95, slope_factor), 0.7, track);
     METALLIC = 0.0;
     SPECULAR = 0.2;
     ALBEDO = color;
