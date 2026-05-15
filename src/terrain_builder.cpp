@@ -130,6 +130,18 @@ std::vector<int> TerrainBuilder::astar(int sx, int sy, int gx, int gy)
   const int goal = gy * w + gx;
   const float diag = 1.41421356f;
 
+  // Elevation-following term: penalize straying from the gentle straight
+  // grade that connects the two endpoint heights. This makes the search
+  // route *around* a hill at the right contour instead of climbing over it
+  // (which is what produced the hump in the road).
+  float h0 = h_world(buf[start]);
+  float h1 = h_world(buf[goal]);
+  float route_span = std::sqrt((float)((sx - gx) * (sx - gx) + (sy - gy) * (sy - gy)));
+  if (route_span < 1.0f)
+    route_span = 1.0f;
+  float elev_weight = lerpf_(0.5f, 12.0f, hill_avoidance);
+  float elev_scale = std::max(1.0f, amplitude * 0.15f);
+
   static const int nx8[8] = {1, -1, 0, 0, 1, 1, -1, -1};
   static const int ny8[8] = {0, 0, 1, -1, 1, -1, 1, -1};
 
@@ -187,7 +199,11 @@ std::vector<int> TerrainBuilder::astar(int sx, int sy, int gx, int gy)
         if (slope > cap && ni != goal)
           continue;
         float r = slope / cap;
-        float step = dist * (1.0f + slope_weight * r * r);
+        float fdx = (float)(nx - sx), fdy = (float)(ny - sy);
+        float frac = clampf_(std::sqrt(fdx * fdx + fdy * fdy) / route_span, 0.0f, 1.0f);
+        float target_h = lerpf_(h0, h1, frac);
+        float dev = std::fabs(h_world(buf[ni]) - target_h) / elev_scale;
+        float step = dist * (1.0f + slope_weight * r * r + elev_weight * dev * dev);
         float tentative = g_cost[cur] + step;
         if (tentative < g_cost[ni])
         {
@@ -248,16 +264,37 @@ void TerrainBuilder::carve_route(const std::vector<std::pair<float, float>> &pol
 
   // Centerline surface height (world) from the natural terrain, grade-limited
   // forward+backward then smoothed so it climbs gently — the longitudinal
-  // "not too steep" constraint.
+  // "not too steep" constraint. `ground` keeps the un-graded natural height
+  // under the centerline so we know how deep the cut/fill is at each sample.
   float sea_world = sea_level;
   std::vector<float> surf(pts.size());
+  std::vector<float> ground(pts.size());
   for (size_t i = 0; i < pts.size(); i++)
   {
     int px = std::clamp((int)std::lround(pts[i].first), 0, w - 1);
     int py = std::clamp((int)std::lround(pts[i].second), 0, h - 1);
-    surf[i] = std::max(h_world(orig[py * w + px]), sea_world + 0.01f * amplitude);
+    float g = std::max(h_world(orig[py * w + px]), sea_world + 0.01f * amplitude);
+    ground[i] = g;
+    surf[i] = g;
   }
-  for (int it = 0; it < 8; it++)
+  // Broad (low-pass) ground reference: the cut/fill cap follows the large-
+  // scale terrain, not local noise, so the bed can never dive into a crater
+  // far below the land around it.
+  std::vector<float> gsm = ground;
+  for (int p = 0; p < 12; p++)
+  {
+    std::vector<float> s = gsm;
+    for (size_t i = 1; i + 1 < gsm.size(); i++)
+      gsm[i] = (s[i - 1] + 2.0f * s[i] + s[i + 1]) * 0.25f;
+  }
+  // Hard cap on how far the bed may sit below / above the broad terrain. A
+  // route that would need a deeper cut than this is A*'s problem to route
+  // around (the elevation-following cost now does that); the carve must never
+  // bore a pit. Endpoints stay pinned to natural ground so networks connect.
+  float max_dev = clampf_(amplitude * 0.12f, 3.0f, 18.0f);
+  float ah = surf.front();
+  float bh = surf.back();
+  for (int it = 0; it < 24; it++)
   {
     for (size_t i = 1; i < pts.size(); i++)
     {
@@ -276,21 +313,42 @@ void TerrainBuilder::carve_route(const std::vector<std::pair<float, float>> &pol
     std::vector<float> sm = surf;
     for (size_t i = 1; i + 1 < pts.size(); i++)
       surf[i] = (sm[i - 1] + 2.0f * sm[i] + sm[i + 1]) * 0.25f;
+    for (size_t i = 1; i + 1 < pts.size(); i++)
+      surf[i] = clampf_(surf[i], gsm[i] - max_dev, gsm[i] + max_dev);
+    surf.front() = ah;
+    surf.back() = bh;
   }
 
-  float sea_buf = world_to_buf(sea_world);
-  float lat_grade = clampf_(max_grade * 4.0f, 0.08f, 0.4f);
-  float shoulder_cap = clampf_(amplitude * 0.35f, width_world, 30.0f);
-  int scan_r = (int)std::ceil(wr + shoulder_cap / world_per_texel + 1.0f);
+  // Lateral embankment grade. Bounded well below vertical, so the terrain
+  // *always* ramps gently down to the road bed no matter how deep the cut —
+  // the wider the cut, the longer the ramp. There is deliberately no upper
+  // cap on the ramp length (the old hard cap is exactly what produced the
+  // near-vertical walls): a deep crossing just gets a correspondingly broad,
+  // smooth cutting/embankment instead of a cliff.
+  float lat_grade = clampf_(max_grade * 4.0f, 0.06f, 0.30f);
+  float min_sh = std::max(width_world * 0.5f, 2.0f * world_per_texel);
+  float max_scan = (float)std::min(w, h); // safety bound only
 
-  const float INF = std::numeric_limits<float>::infinity();
-  std::vector<float> best_d(w * h, INF);
-  std::vector<float> best_surf(w * h, 0.0f);
-
+  // Accumulate a smooth influence field. Every sample contributes a weighted
+  // vote for its bed height to nearby texels; build() later composites the
+  // weighted average and lerps it against the natural terrain by the strongest
+  // influence. Because it is a continuous blend (not a nearest-sample winner),
+  // parallel passes and crossings merge instead of stair-stepping.
   for (size_t i = 0; i < pts.size(); i++)
   {
     float cxf = pts[i].first, cyf = pts[i].second;
     float sw = surf[i];
+    float depth = std::fabs(ground[i] - sw);
+    float sh_len = std::max(min_sh, depth / lat_grade); // world units
+    float scan_r = wr + sh_len / world_per_texel + 1.0f;
+    if (scan_r > max_scan)
+      scan_r = max_scan;
+    // The falloff must reach zero by the edge of whatever we actually scan,
+    // so a clamped scan can never leave a hard rim (the crater wall).
+    float fall = std::min(sh_len, (scan_r - wr) * world_per_texel);
+    if (fall < min_sh)
+      fall = min_sh;
+
     int x0 = std::max(0, (int)std::floor(cxf - scan_r));
     int x1 = std::min(w - 1, (int)std::ceil(cxf + scan_r));
     int y0 = std::max(0, (int)std::floor(cyf - scan_r));
@@ -302,47 +360,37 @@ void TerrainBuilder::carve_route(const std::vector<std::pair<float, float>> &pol
         int idx = ty * w + tx;
         float ddx = tx - cxf, ddy = ty - cyf;
         float d = std::sqrt(ddx * ddx + ddy * ddy);
-        if (d < best_d[idx])
+        float infl;
+        if (d <= wr)
         {
-          best_d[idx] = d;
-          best_surf[idx] = sw;
+          infl = 1.0f; // flat road bed
+        }
+        else
+        {
+          float ld = (d - wr) * world_per_texel;
+          if (ld >= fall)
+            continue; // outside this sample's smooth reach
+          float u = ld / fall;
+          infl = 1.0f - u * u * (3.0f - 2.0f * u); // smoothstep falloff
+        }
+        if (infl <= 0.0f)
+          continue;
+        // Square the weight so the flat bed strongly dominates over a faraway
+        // embankment skirt that happens to overlap it.
+        float wgt = infl * infl;
+        acc_h[idx] += wgt * sw;
+        acc_w[idx] += wgt;
+        if (infl > max_infl[idx])
+          max_infl[idx] = infl;
+        float m = clampf_(d <= wr ? 1.0f
+                                  : 1.0f - (d - wr) / std::max(wr * 0.6f, 1.0f),
+                          0.0f, 1.0f);
+        if (m > 0.0f)
+        {
+          int mi = idx * 2 + mask_channel;
+          mask[mi] = std::max(mask[mi], m);
         }
       }
-    }
-  }
-
-  for (int idx = 0; idx < w * h; idx++)
-  {
-    float dn = best_d[idx];
-    if (dn == INF)
-      continue;
-    if (orig[idx] <= sea_buf) // only ever touch land
-      continue;
-    float sw = best_surf[idx];
-    float ow = h_world(orig[idx]);
-    float new_h;
-    float m;
-    if (dn <= wr)
-    {
-      new_h = sw; // genuinely flat road bed
-      m = 1.0f;
-    }
-    else
-    {
-      float ld = (dn - wr) * world_per_texel;
-      float sh_len = clampf_(std::fabs(ow - sw) / lat_grade, 0.001f, shoulder_cap);
-      if (ld >= sh_len)
-        continue; // beyond embankment: natural terrain
-      float u = ld / sh_len;
-      float blend = u * u * (3.0f - 2.0f * u); // smoothstep fillet
-      new_h = lerpf_(sw, ow, blend);
-      m = clampf_(1.0f - (dn - wr) / std::max(wr * 0.6f, 1.0f), 0.0f, 1.0f);
-    }
-    buf[idx] = world_to_buf(new_h);
-    if (m > 0.0f)
-    {
-      int mi = idx * 2 + mask_channel;
-      mask[mi] = std::max(mask[mi], m);
     }
   }
 }
@@ -493,6 +541,9 @@ Dictionary TerrainBuilder::build(Array matrix, Dictionary cfg)
   if (paths_enabled || roads_enabled)
   {
     orig = buf; // natural reference, captured before any carve
+    acc_h.assign((size_t)w * h, 0.0f);
+    acc_w.assign((size_t)w * h, 0.0f);
+    max_infl.assign((size_t)w * h, 0.0f);
     g_cost.assign((size_t)w * h, 0.0f);
     came.assign((size_t)w * h, -1);
     closed.assign((size_t)w * h, 0);
@@ -507,6 +558,51 @@ Dictionary TerrainBuilder::build(Array matrix, Dictionary cfg)
       build_network(rng, std::max(2, cfg_i(cfg, "road_node_count", 5)),
                     std::max(0.5f, cfg_f(cfg, "road_width", 11.0f)),
                     clampf_(cfg_f(cfg, "road_max_grade", 0.08f), 0.01f, 1.0f), 1);
+
+    // Composite all routes at once: weighted-average bed height, lerped
+    // against the natural terrain by the strongest influence. Overlapping
+    // passes and path/road crossings blend here instead of last-writer-wins.
+    float sea_buf = world_to_buf(sea_level);
+    for (int idx = 0; idx < w * h; idx++)
+    {
+      if (acc_w[idx] <= 0.0f)
+        continue;
+      if (orig[idx] <= sea_buf) // only ever touch land
+        continue;
+      float blended = acc_h[idx] / acc_w[idx];
+      float infl = clampf_(max_infl[idx], 0.0f, 1.0f);
+      float ow = h_world(orig[idx]);
+      buf[idx] = world_to_buf(lerpf_(ow, blended, infl));
+    }
+
+    // Relax the carved band so any residual seam — notably where two routes
+    // at different bed heights cross — is smoothed out. Fully-flat beds
+    // (infl≈1) and untouched terrain (infl≈0) are pinned so roads stay flat
+    // and the natural landscape is left alone; only the transition skirt and
+    // crossings move.
+    for (int pass = 0; pass < 3; pass++)
+    {
+      std::vector<float> src = buf;
+      for (int y = 0; y < h; y++)
+      {
+        for (int x = 0; x < w; x++)
+        {
+          int idx = y * w + x;
+          float mi = max_infl[idx];
+          if (mi <= 0.001f || mi >= 0.999f)
+            continue;
+          float sum = 0.0f;
+          int cnt = 0;
+          if (x > 0) { sum += src[idx - 1]; cnt++; }
+          if (x + 1 < w) { sum += src[idx + 1]; cnt++; }
+          if (y > 0) { sum += src[idx - w]; cnt++; }
+          if (y + 1 < h) { sum += src[idx + w]; cnt++; }
+          if (cnt == 0)
+            continue;
+          buf[idx] = lerpf_(src[idx], sum / (float)cnt, 0.5f);
+        }
+      }
+    }
   }
 
   Ref<Image> himg = Image::create_empty(w, h, false, Image::FORMAT_RF);
@@ -534,6 +630,12 @@ Dictionary TerrainBuilder::build(Array matrix, Dictionary cfg)
   orig.shrink_to_fit();
   mask.clear();
   mask.shrink_to_fit();
+  acc_h.clear();
+  acc_h.shrink_to_fit();
+  acc_w.clear();
+  acc_w.shrink_to_fit();
+  max_infl.clear();
+  max_infl.shrink_to_fit();
   g_cost.clear();
   g_cost.shrink_to_fit();
   came.clear();

@@ -7,7 +7,7 @@
 
 [node name="PerlinIsland" type="Node3D" unique_id=468117199]
 script = ExtResource("1_eo5bj")
-map_size = 4000
+map_size = 1000
 frequency = 4.0
 octaves = 12
 
@@ -18,16 +18,17 @@ script = ExtResource("2_f3c86")
 [node name="DrawMatrix3D" type="Node3D" parent="." unique_id=1308558016]
 visible = false
 script = ExtResource("3_u4oar")
-amplitude = 100.0
-sea_level = 52.07
+amplitude = 61.18
+sea_level = 31.165
 beach_level = 0.0
 grass_level = 3.075
 cliff_level = 12.965
 snow_level = 24.025
-terrain_size = 1000.0
 max_subdivisions = 512
 paths_enabled = true
 roads_enabled = true
+path_width = 2.0
+road_width = 4.0
 path_max_grade = 0.08
 water_wave_speed = 0.045
 water_wave_scale = 4.8

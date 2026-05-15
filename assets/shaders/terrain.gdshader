@@ -28,17 +28,51 @@ uniform float min_shore_sand : hint_range(0.0, 30.0) = 2.0;
 // beach→grass line off a perfect iso-contour. Kept small so beach_level
 // stays the dominant control.
 uniform float beach_jitter_amount : hint_range(0.0, 1.0) = 0.2;
-// Depth below sea level over which the seafloor fades from floor_color to
-// beach_color (the wet beach visible through clear shallow water).
+// Depth below sea level over which the seafloor fades from floor_tint to
+// open sand (the wet beach visible through clear shallow water).
 uniform float underwater_sand_depth : hint_range(0.0, 50.0) = 6.0;
 
-// Colors for different zones. floor_color is the seafloor tint that shows
-// through the (transparent) water near shore.
-uniform vec3 floor_color  : source_color = vec3(0.25, 0.30, 0.25);
-uniform vec3 beach_color  : source_color = vec3(0.9, 0.8, 0.4);
-uniform vec3 grass_color  : source_color = vec3(0.2, 0.6, 0.1);
-uniform vec3 cliff_color  : source_color = vec3(0.5, 0.5, 0.4);
-uniform vec3 snow_color   : source_color = vec3(1.0, 1.0, 1.0);
+// --- Surface textures -----------------------------------------------------
+// Albedo + tangent-space normal for each blended surface. Sampled triplanar
+// in world space so steep cliffs don't smear, at two scales (macro + detail)
+// blended by camera distance to break visible tiling up close while staying
+// crisp far away. Defaults are neutral so terrain still renders before the
+// renderer assigns the generated maps.
+uniform sampler2D sand_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D sand_normal : hint_normal, filter_linear_mipmap;
+uniform sampler2D grass_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D grass_normal : hint_normal, filter_linear_mipmap;
+uniform sampler2D rock_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D rock_normal : hint_normal, filter_linear_mipmap;
+uniform sampler2D snow_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D snow_normal : hint_normal, filter_linear_mipmap;
+uniform sampler2D path_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D path_normal : hint_normal, filter_linear_mipmap;
+uniform sampler2D road_albedo : source_color, filter_linear_mipmap, hint_default_white;
+uniform sampler2D road_normal : hint_normal, filter_linear_mipmap;
+
+// World size (in world units) of one tile of the detail and macro layers.
+uniform float texture_world_size : hint_range(0.5, 40.0) = 6.0;
+uniform float macro_world_size : hint_range(8.0, 200.0) = 52.0;
+// Camera distance over which the high-frequency detail layer fades out into
+// the macro layer (kills tiling shimmer at range).
+uniform float detail_fade_start : hint_range(0.0, 800.0) = 60.0;
+uniform float detail_fade_end : hint_range(0.0, 1200.0) = 320.0;
+// Strength of the texture-derived detail normals.
+uniform float detail_normal_strength : hint_range(0.0, 2.0) = 1.0;
+// Triplanar blend exponent — higher = tighter switch between projection axes.
+uniform float triplanar_sharpness : hint_range(1.0, 16.0) = 6.0;
+
+// Seafloor tint multiplied over the sand texture below the waterline (the
+// muted, slightly green submerged shelf seen through the water plane).
+uniform vec3 floor_color : source_color = vec3(0.45, 0.55, 0.45);
+
+// Per-surface base roughness (blended by the same biome weights as albedo).
+uniform float rough_sand  : hint_range(0.0, 1.0) = 0.9;
+uniform float rough_grass : hint_range(0.0, 1.0) = 0.85;
+uniform float rough_rock  : hint_range(0.0, 1.0) = 0.78;
+uniform float rough_snow  : hint_range(0.0, 1.0) = 0.6;
+uniform float rough_track : hint_range(0.0, 1.0) = 0.72;
 
 // Blend width for smooth transitions between terrain zones
 uniform float blend_width : hint_range(0.0, 50.0) = 3.0;
@@ -46,10 +80,6 @@ uniform float blend_width : hint_range(0.0, 50.0) = 3.0;
 // Slope-based cliff blending
 uniform float slope_cliff_threshold : hint_range(0.0, 1.0) = 0.6;
 uniform float slope_cliff_blend : hint_range(0.0, 0.5) = 0.15;
-
-// Color variation noise (world-space wavelength in world units)
-uniform float noise_strength : hint_range(0.0, 0.2) = 0.06;
-uniform float noise_scale : hint_range(1.0, 200.0) = 18.0;
 
 // Biome boundary noise: jitters the height thresholds so beach/grass/cliff/snow
 // lines are no longer straight iso-contours. Wavelength in world units,
@@ -61,8 +91,11 @@ uniform float biome_boundary_strength : hint_range(0.0, 40.0) = 10.0;
 // DrawMatrix3D). Defaults to black so terrain with the feature off is
 // unaffected even before a mask is assigned.
 uniform sampler2D path_mask : hint_default_black, filter_linear_mipmap;
+// Gentle tint pulled toward the editor-exposed path/road colors so those
+// controls still bias the carved track without hiding the texture.
 uniform vec3 path_color : source_color = vec3(0.42, 0.35, 0.24);
 uniform vec3 road_color : source_color = vec3(0.50, 0.50, 0.48);
+uniform float track_tint_strength : hint_range(0.0, 1.0) = 0.25;
 
 // Heightmap texel size (set from code or estimate)
 uniform vec2 texel_size = vec2(0.002, 0.002);
@@ -102,6 +135,36 @@ float fbm(vec2 p) {
         amp *= 0.5;
     }
     return val;
+}
+
+// Triplanar blend weights from a world-space normal.
+vec3 tri_weights(vec3 wn) {
+    vec3 w = pow(abs(wn), vec3(triplanar_sharpness));
+    return w / max(w.x + w.y + w.z, 1e-4);
+}
+
+// Triplanar colour sample at a given world tile scale.
+vec3 tri_albedo(sampler2D tex, vec3 wp, vec3 bw, float inv_size) {
+    vec3 x = texture(tex, wp.zy * inv_size).rgb;
+    vec3 y = texture(tex, wp.xz * inv_size).rgb;
+    vec3 z = texture(tex, wp.xy * inv_size).rgb;
+    return x * bw.x + y * bw.y + z * bw.z;
+}
+
+// Macro+detail anti-tiling albedo: two octaves blended by detail visibility.
+vec3 surf_albedo(sampler2D tex, vec3 wp, vec3 bw, float detail_vis) {
+    vec3 d = tri_albedo(tex, wp, bw, 1.0 / texture_world_size);
+    vec3 m = tri_albedo(tex, wp, bw, 1.0 / macro_world_size);
+    return mix(m, d, detail_vis);
+}
+
+// Triplanar tangent-space-ish detail normal (single, detail-scale octave).
+vec3 surf_normal(sampler2D tex, vec3 wp, vec3 bw) {
+    float s = 1.0 / texture_world_size;
+    vec3 nx = texture(tex, wp.zy * s).xyz * 2.0 - 1.0;
+    vec3 ny = texture(tex, wp.xz * s).xyz * 2.0 - 1.0;
+    vec3 nz = texture(tex, wp.xy * s).xyz * 2.0 - 1.0;
+    return normalize(nx * bw.x + ny * bw.y + nz * bw.z);
 }
 
 void vertex() {
@@ -149,21 +212,12 @@ void fragment() {
     // catches the case where it's configured at or below the waterline.
     float beach_top = max(beach_level, min_shore_sand) + beach_jitter;
 
-    // Wet beach: floor_color fades up to beach_color across the shallow shelf.
+    // --- Biome weights (identical math to the old colour blend, kept as
+    // explicit mix() chain so albedo, normal and roughness stay consistent).
     float underwater_sand_t = smoothstep(-max(underwater_sand_depth, 0.001), 0.0, h);
-    vec3 color = mix(floor_color, beach_color, underwater_sand_t);
-
-    // Sand → grass.
     float grass_t = smoothstep(beach_top - blend_width * 0.5, beach_top + blend_width * 0.5, h);
-    color = mix(color, grass_color, grass_t);
-
-    // Higher biome bands keep symmetric noise so the cliff/snow lines wander
-    // naturally on both sides.
     float cliff_t = smoothstep(cliff_level - blend_width * 0.5, cliff_level + blend_width * 0.5, h_biome);
     float snow_t  = smoothstep(snow_level - blend_width * 0.5, snow_level + blend_width * 0.5, h_biome);
-    color = mix(color, cliff_color, cliff_t);
-    color = mix(color, snow_color, snow_t);
-
     float slope_factor = smoothstep(
         slope_cliff_threshold - slope_cliff_blend,
         slope_cliff_threshold + slope_cliff_blend,
@@ -172,26 +226,69 @@ void fragment() {
     // Suppress the slope-driven rock overlay inside the shore band so steep
     // little dunes at the waterline still read as sand, not cliff.
     float above_shore = smoothstep(beach_top * 0.5, max(beach_top * 1.5, beach_top + blend_width), h);
-    color = mix(color, cliff_color, slope_factor * above_shore);
+    float rock_slope = slope_factor * above_shore;
 
-    // World-space color variation so the pattern is continuous across chunks.
-    float n = fbm(v_world_pos.xz / max(noise_scale, 1.0));
-    color += (n - 0.5) * 2.0 * noise_strength;
-
-    // Paths/roads: tint the carved track, but only above the waterline so a
-    // route that grazes the shore never paints onto submerged seafloor.
+    // Paths/roads only above the waterline so a route grazing the shore never
+    // paints onto submerged seafloor.
     vec2 pr = textureLod(path_mask, UV, height_lod).rg;
     float land = smoothstep(0.0, blend_width, h);
     float path_m = pr.r * land;
     float road_m = pr.g * land;
-    color = mix(color, path_color, path_m);
-    color = mix(color, road_color, road_m);
     float track = max(path_m, road_m);
 
-    NORMAL_MAP = heightmap_normal * 0.5 + 0.5;
-    // Graded tracks read as packed dirt/stone: less of the slope-rock
-    // roughness, a touch smoother than open terrain.
-    ROUGHNESS = mix(mix(0.85, 0.95, slope_factor), 0.7, track);
+    // --- Texture sampling -------------------------------------------------
+    vec3 bw = tri_weights(heightmap_normal);
+    float cam_dist = length(v_world_pos - CAMERA_POSITION_WORLD);
+    float detail_vis = 1.0 - smoothstep(detail_fade_start, max(detail_fade_end, detail_fade_start + 1.0), cam_dist);
+
+    vec3 t_sand  = surf_albedo(sand_albedo,  v_world_pos, bw, detail_vis);
+    vec3 t_grass = surf_albedo(grass_albedo, v_world_pos, bw, detail_vis);
+    vec3 t_rock  = surf_albedo(rock_albedo,  v_world_pos, bw, detail_vis);
+    vec3 t_snow  = surf_albedo(snow_albedo,  v_world_pos, bw, detail_vis);
+    vec3 t_path  = surf_albedo(path_albedo,  v_world_pos, bw, detail_vis);
+    vec3 t_road  = surf_albedo(road_albedo,  v_world_pos, bw, detail_vis);
+
+    // Submerged shelf: tint the sand toward the muted seafloor colour.
+    vec3 base = t_sand * mix(floor_color, vec3(1.0), underwater_sand_t);
+
+    vec3 color = base;
+    vec3 nrm = surf_normal(sand_normal, v_world_pos, bw);
+
+    color = mix(color, t_grass, grass_t);
+    nrm = mix(nrm, surf_normal(grass_normal, v_world_pos, bw), grass_t);
+
+    color = mix(color, t_rock, cliff_t);
+    nrm = mix(nrm, surf_normal(rock_normal, v_world_pos, bw), cliff_t);
+
+    color = mix(color, t_snow, snow_t);
+    nrm = mix(nrm, surf_normal(snow_normal, v_world_pos, bw), snow_t);
+
+    // Slope-driven rock overlay reuses the rock maps.
+    color = mix(color, t_rock, rock_slope);
+    nrm = mix(nrm, surf_normal(rock_normal, v_world_pos, bw), rock_slope);
+
+    // Tracks: dirt for paths, gravel for roads, with a gentle pull toward the
+    // editor-exposed path/road colours.
+    vec3 path_col = mix(t_path, t_path * (path_color * 2.0), track_tint_strength);
+    vec3 road_col = mix(t_road, t_road * (road_color * 2.0), track_tint_strength);
+    color = mix(color, path_col, path_m);
+    nrm = mix(nrm, surf_normal(path_normal, v_world_pos, bw), path_m);
+    color = mix(color, road_col, road_m);
+    nrm = mix(nrm, surf_normal(road_normal, v_world_pos, bw), road_m);
+
+    nrm = normalize(mix(vec3(0.0, 0.0, 1.0), nrm, detail_normal_strength * detail_vis));
+
+    // Per-surface roughness blended with the same weights.
+    float rough = rough_sand;
+    rough = mix(rough, rough_grass, grass_t);
+    rough = mix(rough, rough_rock, cliff_t);
+    rough = mix(rough, rough_snow, snow_t);
+    rough = mix(rough, rough_rock, rock_slope);
+    rough = mix(rough, rough_track, track);
+
+    NORMAL_MAP = nrm * 0.5 + 0.5;
+    NORMAL_MAP_DEPTH = 1.0;
+    ROUGHNESS = rough;
     METALLIC = 0.0;
     SPECULAR = 0.2;
     ALBEDO = color;

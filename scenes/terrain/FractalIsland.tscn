@@ -1,36 +1,36 @@
-[gd_scene load_steps=4 format=3 uid="uid://c04chv34v52i1"]
+[gd_scene format=3 uid="uid://c04chv34v52i1"]
 
 [ext_resource type="Script" uid="uid://chjogurqpmy67" path="res://scripts/terrain/FractalIsland.gd" id="1_llfvs"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_wl32a"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_o7bwd"]
-[ext_resource type="Script" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
+[ext_resource type="Script" uid="uid://b6xfo056yq8lt" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
-[node name="FractalIsland" type="Node3D"]
+[node name="FractalIsland" type="Node3D" unique_id=1979571184]
 script = ExtResource("1_llfvs")
 map_size = 400
 altitude = 95
 add_altitude = 20
 
-[node name="DrawMatrix2D" type="Node2D" parent="."]
+[node name="DrawMatrix2D" type="Node2D" parent="." unique_id=64833813]
 script = ExtResource("2_wl32a")
 
-[node name="DrawMatrix3D" type="Node3D" parent="."]
+[node name="DrawMatrix3D" type="Node3D" parent="." unique_id=1668123596]
 visible = false
 script = ExtResource("3_o7bwd")
-amplitude = 220.0
-sea_level = 65.0
-beach_level = 13.0
-grass_level = 50.0
-cliff_level = 95.0
+amplitude = 110.335
+sea_level = 49.735
+beach_level = 7.33
+grass_level = 23.885
+cliff_level = 35.945
 snow_level = 125.0
 terrain_size = 2000.0
 
-[node name="TerrainLOD" type="TerrainLOD" parent="."]
+[node name="TerrainLOD" type="TerrainLOD" parent="." unique_id=1222281278]
 chunk_count = 16
 lod_levels = 5
-collision_radius = 150.0
 draw_matrix_3d = NodePath("../DrawMatrix3D")
+collision_radius = 150.0
 
-[node name="WaterPlane" type="Node3D" parent="."]
+[node name="WaterPlane" type="Node3D" parent="." unique_id=591118915]
 script = ExtResource("water_plane_script")
 draw_matrix_3d = NodePath("../DrawMatrix3D")

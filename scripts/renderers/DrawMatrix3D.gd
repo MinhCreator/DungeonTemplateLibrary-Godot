@@ -41,6 +41,12 @@ signal terrain_generated
 @export var path_color: Color = Color("#6b5a3e"): set = _set_path_color
 @export var road_color: Color = Color("#80807a"): set = _set_road_color
 
+@export_group("Surface Textures")
+# World size (in metres) of one tile of the detail / macro texture layers.
+@export var texture_world_size: float = 6.0: set = _set_texture_world_size
+@export var macro_world_size: float = 52.0: set = _set_macro_world_size
+@export var detail_normal_strength: float = 1.0: set = _set_detail_normal_strength
+
 @export_group("Water Animation")
 @export var water_wave_speed: float = 0.35: set = _set_water_wave_speed
 @export var water_wave_scale: float = 80.0: set = _set_water_wave_scale
@@ -78,9 +84,46 @@ var default_colors: Array[Color] = [
 var _last_matrix: Array = []
 var _initialized: bool = false
 
+# Surface name -> base of the generated albedo/normal pair. Sampled triplanar
+# at two scales in the terrain shader to break tiling.
+const SURFACE_TEX := {
+	"sand": "sand", "grass": "grass", "rock": "rock",
+	"snow": "snow", "path": "dirt", "road": "gravel",
+}
+const TEX_DIR := "res://assets/textures/terrain/"
+
 func _ready():
 	terrain_material.shader = terrain_shader
 	water_material.shader = water_shader
+	_assign_surface_textures()
+
+# Loads the Imagen-generated PBR maps once and binds them to the terrain
+# shader. Safe to call repeatedly; ShaderMaterial keeps the params across the
+# shader reassignment in draw_terrain().
+func _assign_surface_textures() -> void:
+	for shader_name in SURFACE_TEX:
+		var base: String = SURFACE_TEX[shader_name]
+		var alb: Texture2D = load(TEX_DIR + base + "_albedo.png")
+		var nrm: Texture2D = load(TEX_DIR + base + "_normal.png")
+		if alb != null:
+			terrain_material.set_shader_parameter(shader_name + "_albedo", alb)
+		if nrm != null:
+			terrain_material.set_shader_parameter(shader_name + "_normal", nrm)
+	terrain_material.set_shader_parameter("texture_world_size", texture_world_size)
+	terrain_material.set_shader_parameter("macro_world_size", macro_world_size)
+	terrain_material.set_shader_parameter("detail_normal_strength", detail_normal_strength)
+
+func _set_texture_world_size(v: float):
+	texture_world_size = maxf(0.5, v)
+	terrain_material.set_shader_parameter("texture_world_size", texture_world_size)
+
+func _set_macro_world_size(v: float):
+	macro_world_size = maxf(8.0, v)
+	terrain_material.set_shader_parameter("macro_world_size", macro_world_size)
+
+func _set_detail_normal_strength(v: float):
+	detail_normal_strength = clampf(v, 0.0, 2.0)
+	terrain_material.set_shader_parameter("detail_normal_strength", detail_normal_strength)
 
 func _set_amplitude(new_value: float):
 	amplitude = new_value
@@ -235,6 +278,7 @@ func draw_terrain(matrix: Array):
 
 	terrain_material.shader = terrain_shader
 	water_material.shader = water_shader
+	_assign_surface_textures()
 	var height_tex := draw_heightmap(matrix)
 	if height_tex == null:
 		return

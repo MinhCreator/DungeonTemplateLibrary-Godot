@@ -54,6 +54,14 @@ namespace godot
     std::vector<float> orig; // natural reference for shoulder fillets
     std::vector<float> mask; // w*h*2, R = path, G = road
 
+    // Carve accumulation (build-scoped). Every route blends into these; then
+    // build() composites them onto buf in one pass and relaxes the result, so
+    // parallel passes and path/road crossings merge smoothly instead of
+    // stair-stepping into walls.
+    std::vector<float> acc_h;    // sum(weight * road bed height, world)
+    std::vector<float> acc_w;    // sum(weight)
+    std::vector<float> max_infl; // strongest road influence (0..1) per texel
+
     // A* scratch, allocated once and reused per edge.
     std::vector<float> g_cost;
     std::vector<int32_t> came;

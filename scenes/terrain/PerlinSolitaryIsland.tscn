@@ -1,30 +1,34 @@
-[gd_scene load_steps=4 format=3 uid="uid://boiqsaeb4riij"]
+[gd_scene format=3 uid="uid://boiqsaeb4riij"]
 
 [ext_resource type="Script" uid="uid://glhy8ie7drbn" path="res://scripts/terrain/PerlinSolitaryIsland.gd" id="1_n1emm"]
 [ext_resource type="Script" uid="uid://cwmomg38dpolk" path="res://scripts/renderers/DrawMatrix2D.gd" id="2_vo5bb"]
 [ext_resource type="Script" uid="uid://d1dsscsnh32r3" path="res://scripts/renderers/DrawMatrix3D.gd" id="3_xl3jo"]
-[ext_resource type="Script" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
+[ext_resource type="Script" uid="uid://b6xfo056yq8lt" path="res://scripts/renderers/WaterPlane.gd" id="water_plane_script"]
 
-[node name="PerlinSolitaryIsland" type="Node3D"]
+[node name="PerlinSolitaryIsland" type="Node3D" unique_id=99989577]
 script = ExtResource("1_n1emm")
+map_size = 1000
 
-[node name="DrawMatrix2D" type="Node2D" parent="."]
+[node name="DrawMatrix2D" type="Node2D" parent="." unique_id=152386606]
 script = ExtResource("2_vo5bb")
 
-[node name="DrawMatrix3D" type="Node3D" parent="."]
+[node name="DrawMatrix3D" type="Node3D" parent="." unique_id=1365387162]
 visible = false
 script = ExtResource("3_xl3jo")
-amplitude = 500.0
-sea_level = 150.0
-beach_level = 10.0
-cliff_level = 170.0
-snow_level = 240.0
-terrain_size = 2000.0
+amplitude = 81.83
+sea_level = 56.16
+beach_level = 2.055
+grass_level = 6.835
+cliff_level = 18.005
+snow_level = 20.765
+paths_enabled = true
+roads_enabled = true
+path_width = 1.0
+road_width = 4.0
 
-[node name="TerrainLOD" type="TerrainLOD" parent="."]
-collision_radius = 150.0
+[node name="TerrainLOD" type="TerrainLOD" parent="." unique_id=225338464]
 draw_matrix_3d = NodePath("../DrawMatrix3D")
 
-[node name="WaterPlane" type="Node3D" parent="."]
+[node name="WaterPlane" type="Node3D" parent="." unique_id=1319334503]
 script = ExtResource("water_plane_script")
 draw_matrix_3d = NodePath("../DrawMatrix3D")
