@@ -77,7 +77,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bin-windows-x86_64
-          path: addons/dtl/bin/dtl.windows.template_release.x86_64.dll
+          # mingw's linker prepends "lib" to the shared object name.
+          path: addons/dtl/bin/libdtl.windows.template_release.x86_64.dll
           if-no-files-found: error
 
   build-macos:
@@ -153,8 +154,8 @@ jobs:
 
           cp "artifacts/bin-linux-x86_64/libdtl.linux.template_release.x86_64.so" \
              "${stage}/addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
-          cp "artifacts/bin-windows-x86_64/dtl.windows.template_release.x86_64.dll" \
-             "${stage}/addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
+          cp "artifacts/bin-windows-x86_64/libdtl.windows.template_release.x86_64.dll" \
+             "${stage}/addons/dtl/bin/libdtl.windows.template_release.x86_64.dll"
           # The macOS framework is a directory of files under the artifact root.
           mkdir -p "${stage}/addons/dtl/bin/dtl.macos.template_release.framework"
           cp -r artifacts/bin-macos-universal/. \
@@ -174,8 +175,8 @@ jobs:
           linux.debug.x86_64   = "res://addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
           linux.release.x86_64 = "res://addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
 
-          windows.debug.x86_64   = "res://addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
-          windows.release.x86_64 = "res://addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
+          windows.debug.x86_64   = "res://addons/dtl/bin/libdtl.windows.template_release.x86_64.dll"
+          windows.release.x86_64 = "res://addons/dtl/bin/libdtl.windows.template_release.x86_64.dll"
 
           macos.debug   = "res://addons/dtl/bin/dtl.macos.template_release.framework"
           macos.release = "res://addons/dtl/bin/dtl.macos.template_release.framework"

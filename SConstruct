@@ -96,10 +96,10 @@ if platform == 'macos' and arch == 'universal':
             godot_cpp_lib = lib
             break
     if not godot_cpp_lib:
-        print(f"ERROR: Could not find godot-cpp library. Tried:")
-        for lib in possible_libs:
-            print(f"  - {os.path.join('include', 'godot-cpp', 'bin', lib)}")
-        Exit(1)
+        # No prebuilt universal lib present — fall back to the universal name
+        # so the from-source build below produces and links it (mirrors the
+        # single-arch macOS branch instead of aborting).
+        godot_cpp_lib = possible_libs[0]
 elif platform == 'macos':
     possible_libs = [
         f"{lib_prefix}godot-cpp.{platform}.{target}.{arch}{lib_ext}",
