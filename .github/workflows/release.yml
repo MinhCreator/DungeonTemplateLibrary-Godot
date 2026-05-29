@@ -173,8 +173,9 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.store_upload }}
         uses: NodotProject/godot-asset-store-release@v1
         with:
-          username: ${{ secrets.GODOT_STORE_USERNAME }}
-          password: ${{ secrets.GODOT_STORE_PASSWORD }}
+          # CI uses a pre-obtained session cookie (interactive Keycloak login
+          # can't run headlessly). Refresh GODOT_STORE_SESSION when it expires.
+          session-cookie: ${{ secrets.GODOT_STORE_SESSION }}
           publisher: jake-cattrall
           asset-slug: dtl
           file: ${{ steps.stage.outputs.zip }}
