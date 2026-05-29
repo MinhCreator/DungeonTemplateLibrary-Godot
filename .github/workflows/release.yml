@@ -100,13 +100,17 @@ jobs:
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             ver="${GITHUB_REF_NAME#v}"
+            tag="${GITHUB_REF_NAME}"
           elif [ -n "${{ inputs.version }}" ]; then
             ver="${{ inputs.version }}"
+            tag="v${ver}"
           else
             ver="0.0.0-${GITHUB_SHA::8}"
+            tag="v${ver}"
           fi
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${ver}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${ver} (tag ${tag})"
 
       - name: Download all binaries
         uses: actions/download-artifact@v4
@@ -161,9 +165,12 @@ jobs:
           echo "zip=${stage}.zip" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
+          # Use the pushed tag, or create one from the resolved version on a
+          # manual dispatch so the release is never skipped.
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           files: |
             ${{ steps.stage.outputs.zip }}
             SHA256SUMS
