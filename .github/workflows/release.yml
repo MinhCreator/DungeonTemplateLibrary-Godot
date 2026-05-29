@@ -123,13 +123,14 @@ jobs:
         run: |
           set -euo pipefail
           ver="${{ steps.version.outputs.version }}"
-          stage="DungeonTemplateLibrary-Godot-${ver}"
+          stage="stage"
 
-          # Ship the whole addons/ folder (the repo's documented packaging
-          # convention), but replace the dtl binaries + manifest with fresh
-          # build output.
-          mkdir -p "${stage}"
-          cp -r addons "${stage}/addons"
+          # Ship only the DTL addon — exclude third-party addons (e.g.
+          # freelookcamera), the demo project, and repo docs. The zip root is
+          # addons/dtl/ so it drops straight into a project's addons/ folder.
+          rm -rf "${stage}"
+          mkdir -p "${stage}/addons/dtl"
+          cp -r addons/dtl/. "${stage}/addons/dtl/"
           rm -rf "${stage}/addons/dtl/bin"
           mkdir -p "${stage}/addons/dtl/bin"
 
@@ -156,13 +157,10 @@ jobs:
           windows.release.x86_64 = "res://addons/dtl/bin/libdtl.windows.template_release.x86_64.dll"
           GDEXT
 
-          # Top-level docs alongside the addon.
-          cp LICENSE   "${stage}/LICENSE"   2>/dev/null || true
-          cp README.md "${stage}/README.md" 2>/dev/null || true
-
-          zip -r "${stage}.zip" "${stage}"
-          sha256sum "${stage}.zip" > SHA256SUMS
-          echo "zip=${stage}.zip" >> "$GITHUB_OUTPUT"
+          zipname="DungeonTemplateLibrary-Godot-${ver}.zip"
+          ( cd "${stage}" && zip -r "../${zipname}" addons )
+          sha256sum "${zipname}" > SHA256SUMS
+          echo "zip=${zipname}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
