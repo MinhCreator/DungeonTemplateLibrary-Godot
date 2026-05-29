@@ -1,0 +1,214 @@
+name: release
+
+# Build the DTL GDExtension for every platform, package the addon as a zip,
+# publish a GitHub Release, and upload the version to the Godot Asset Store.
+#
+# Triggered by pushing a version tag (v1.2.3) or run manually. The store step
+# requires two repository secrets: GODOT_STORE_USERNAME and GODOT_STORE_PASSWORD.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name (defaults to 0.0.0-<sha> when run manually)."
+        required: false
+        default: ""
+      store_upload:
+        description: "Upload the built version to the Godot Asset Store."
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: build (linux-x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: python -m pip install --disable-pip-version-check scons
+
+      - name: Build
+        run: ./build.sh linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-x86_64
+          path: addons/dtl/bin/libdtl.linux.template_release.x86_64.so
+          if-no-files-found: error
+
+  build-windows:
+    name: build (windows-x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons + mingw-w64
+        run: |
+          python -m pip install --disable-pip-version-check scons
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      - name: Build (mingw cross-compile)
+        run: ./build.sh windows
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows-x86_64
+          path: addons/dtl/bin/dtl.windows.template_release.x86_64.dll
+          if-no-files-found: error
+
+  build-macos:
+    name: build (macos-universal)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SCons
+        run: python -m pip install --disable-pip-version-check scons
+
+      - name: Build (universal)
+        run: ./build.sh macos
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-macos-universal
+          # The macOS build produces a .framework bundle (a directory).
+          path: addons/dtl/bin/dtl.macos.template_release.framework/**
+          if-no-files-found: error
+
+  package:
+    name: package addon zip
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows, build-macos]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ver="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="0.0.0-${GITHUB_SHA::8}"
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${ver}"
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage addon
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.version.outputs.version }}"
+          stage="DungeonTemplateLibrary-Godot-${ver}"
+
+          # Ship the whole addons/ folder (the repo's documented packaging
+          # convention), but replace the dtl binaries + manifest with fresh
+          # build output.
+          mkdir -p "${stage}"
+          cp -r addons "${stage}/addons"
+          rm -rf "${stage}/addons/dtl/bin"
+          mkdir -p "${stage}/addons/dtl/bin"
+
+          cp "artifacts/bin-linux-x86_64/libdtl.linux.template_release.x86_64.so" \
+             "${stage}/addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
+          cp "artifacts/bin-windows-x86_64/dtl.windows.template_release.x86_64.dll" \
+             "${stage}/addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
+          # The macOS framework is a directory of files under the artifact root.
+          mkdir -p "${stage}/addons/dtl/bin/dtl.macos.template_release.framework"
+          cp -r artifacts/bin-macos-universal/. \
+             "${stage}/addons/dtl/bin/dtl.macos.template_release.framework/"
+
+          # Write a shipped .gdextension that points both debug and release at
+          # the release binaries (we only build template_release).
+          cat > "${stage}/addons/dtl/dtl.gdextension" <<'GDEXT'
+          [configuration]
+
+          entry_symbol = "gdextension_entry"
+          compatibility_minimum = "4.1"
+          reloadable = true
+
+          [libraries]
+
+          linux.debug.x86_64   = "res://addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
+          linux.release.x86_64 = "res://addons/dtl/bin/libdtl.linux.template_release.x86_64.so"
+
+          windows.debug.x86_64   = "res://addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
+          windows.release.x86_64 = "res://addons/dtl/bin/dtl.windows.template_release.x86_64.dll"
+
+          macos.debug   = "res://addons/dtl/bin/dtl.macos.template_release.framework"
+          macos.release = "res://addons/dtl/bin/dtl.macos.template_release.framework"
+          GDEXT
+
+          # Top-level docs alongside the addon.
+          cp LICENSE   "${stage}/LICENSE"   2>/dev/null || true
+          cp README.md "${stage}/README.md" 2>/dev/null || true
+
+          zip -r "${stage}.zip" "${stage}"
+          sha256sum "${stage}.zip" > SHA256SUMS
+          echo "zip=${stage}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.stage.outputs.zip }}
+            SHA256SUMS
+          fail_on_unmatched_files: true
+
+      - name: Publish to the Godot Asset Store
+        if: ${{ github.event_name == 'push' || inputs.store_upload }}
+        uses: NodotProject/godot-asset-store-release@v1
+        with:
+          username: ${{ secrets.GODOT_STORE_USERNAME }}
+          password: ${{ secrets.GODOT_STORE_PASSWORD }}
+          publisher: jake-cattrall
+          asset-slug: dtl
+          file: ${{ steps.stage.outputs.zip }}
+          version: ${{ steps.version.outputs.version }}
+          changelog: "Release ${{ steps.version.outputs.version }}"
+          min-godot-version: "4.1"
+          stable: "true"
+          submit-for-review: "false"
